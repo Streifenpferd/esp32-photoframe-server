@@ -27,6 +27,7 @@ type DeviceServiceDeps struct {
 	Weather        *weather.Client
 	Calendar       *gcalendar.Client
 	CalendarGoogle *googlephotos.Client
+	CalendarEvents *CalendarEventService
 }
 
 type DeviceService struct {
@@ -37,6 +38,7 @@ type DeviceService struct {
 	weather        *weather.Client
 	calendar       *gcalendar.Client
 	calendarGoogle *googlephotos.Client
+	calendarEvents *CalendarEventService
 }
 
 func NewDeviceService(deps DeviceServiceDeps) *DeviceService {
@@ -48,6 +50,7 @@ func NewDeviceService(deps DeviceServiceDeps) *DeviceService {
 		weather:        deps.Weather,
 		calendar:       deps.Calendar,
 		calendarGoogle: deps.CalendarGoogle,
+		calendarEvents: deps.CalendarEvents,
 	}
 }
 
@@ -558,18 +561,11 @@ func (s *DeviceService) PushToHost(device *model.Device, imagePath string, extra
 		}
 
 		var events []gcalendar.Event
-		if device.ShowCalendar && s.calendar != nil && s.calendarGoogle != nil {
-			httpClient, err := s.calendarGoogle.GetClient()
-			if err == nil {
-				calendarID := device.CalendarID
-				if calendarID == "" {
-					calendarID = "primary"
-				}
-				var calErr error
-				events, calErr = s.calendar.GetTodayEvents(httpClient, calendarID, deviceTimezone)
-				if calErr != nil {
-					log.Printf("Failed to fetch calendar events for device %d: %v", device.ID, calErr)
-				}
+		if device.ShowCalendar && s.calendarEvents != nil {
+			var calErr error
+			events, calErr = s.calendarEvents.GetEvents(device.CalendarID, deviceTimezone)
+			if calErr != nil {
+				log.Printf("Failed to fetch calendar events for device %d: %v", device.ID, calErr)
 			}
 		}
 
