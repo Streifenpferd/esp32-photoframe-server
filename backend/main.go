@@ -14,7 +14,9 @@ import (
 	"github.com/aitjcize/esp32-photoframe-server/backend/internal/middleware"
 	"github.com/aitjcize/esp32-photoframe-server/backend/internal/model"
 	"github.com/aitjcize/esp32-photoframe-server/backend/internal/service"
+	"github.com/aitjcize/esp32-photoframe-server/backend/pkg/caldavfeed"
 	"github.com/aitjcize/esp32-photoframe-server/backend/pkg/gcalendar"
+	"github.com/aitjcize/esp32-photoframe-server/backend/pkg/icalfeed"
 	"github.com/aitjcize/esp32-photoframe-server/backend/pkg/googlephotos"
 	"github.com/aitjcize/esp32-photoframe-server/backend/pkg/weather"
 	"github.com/labstack/echo/v4"
@@ -156,6 +158,9 @@ func main() {
 	processorService := service.NewProcessorService()
 	weatherClient := weather.NewClient()
 	calendarClient := gcalendar.NewClient()
+	icalClient := icalfeed.NewClient()
+	caldavClient := caldavfeed.NewClient()
+	calendarEvents := service.NewCalendarEventService(settingsService, calendarClient, googleCalendarClient, icalClient, caldavClient)
 	// Initialize Renderer (HTML/CSS → image via headless Chrome)
 	// Chrome is launched lazily on first render request to save memory.
 	rendererService, err := service.NewRendererService()
@@ -214,6 +219,7 @@ func main() {
 		Weather:        weatherClient,
 		Calendar:       calendarClient,
 		CalendarGoogle: googleCalendarClient,
+		CalendarEvents: calendarEvents,
 	})
 	deviceHandler := handler.NewDeviceHandler(deviceService, synologyService, immichService, database)
 
@@ -251,11 +257,13 @@ func main() {
 		Sources:        sourceRegistry,
 		Weather:        weatherClient,
 		Calendar:       calendarClient,
+		CalendarEvents: calendarEvents,
 		Auth:           authService,
 		DB:             database,
 		DataDir:        dataDir,
 	})
 	ch := handler.NewCalendarHandler(googleCalendarClient, calendarClient)
+	caldavHandler := handler.NewCalDAVHandler(caldavClient)
 	ah := handler.NewAuthHandler(authService, settingsService)
 
 	// Echo instance
@@ -393,6 +401,7 @@ func main() {
 
 	// Calendar (Protected)
 	protectedApi.GET("/calendar/calendars", ch.ListCalendars)
+	protectedApi.POST("/caldav/calendars", caldavHandler.ListCalendars)
 
 	// Google Auth (Photos + Calendar share the same callback via state parameter)
 	protectedApi.GET("/auth/google/login", googleHandler.Login)
