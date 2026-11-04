@@ -239,53 +239,56 @@
               <v-divider class="my-6"></v-divider>
               <h3 class="text-subtitle-1 font-weight-bold mb-3">Calendar</h3>
 
-              <div v-if="form.google_calendar_connected === 'true'">
-                <v-alert
-                  type="success"
-                  variant="tonal"
-                  class="mb-4"
-                  density="compact"
-                  icon="mdi-check-circle"
-                >
-                  Google Calendar connected
-                </v-alert>
+              <v-select
+                v-model="form.calendar_source"
+                :items="calendarSourceOptions"
+                item-title="title"
+                item-value="value"
+                label="Calendar source"
+                variant="outlined"
+                class="mb-3"
+                @update:model-value="onCalendarSourceChanged"
+              ></v-select>
 
-                <v-btn
-                  color="error"
-                  variant="text"
-                  @click="logoutGoogleCalendar"
-                >
-                  Disconnect Google Calendar
-                </v-btn>
-              </div>
+              <template v-if="form.calendar_source === 'google'">
+                <div v-if="form.google_calendar_connected === 'true'">
+                  <v-alert type="success" variant="tonal" class="mb-4" density="compact" icon="mdi-check-circle">
+                    Google Calendar connected
+                  </v-alert>
+                  <v-btn color="error" variant="text" @click="logoutGoogleCalendar">Disconnect Google Calendar</v-btn>
+                </div>
+                <div v-else>
+                  <v-alert type="info" variant="tonal" class="mb-4" density="compact">
+                    Connect a Google account for Calendar integration. This can be a different account than Google Photos.
+                  </v-alert>
+                  <v-btn v-if="form.google_client_id && form.google_client_secret" color="primary" @click="connectGoogleCalendar">Authorize Google Calendar</v-btn>
+                  <v-alert v-else type="warning" variant="tonal" density="compact">Enter Google API credentials above first.</v-alert>
+                </div>
+              </template>
 
-              <div v-else>
-                <v-alert
-                  type="info"
-                  variant="tonal"
-                  class="mb-4"
-                  density="compact"
-                >
-                  Connect a Google account for Calendar integration. This can be
-                  a different account than Google Photos.
+              <template v-else-if="form.calendar_source === 'ical'">
+                <v-alert type="info" variant="tonal" class="mb-4" density="compact">
+                  Read-only iCal/ICS feed. Treat a private feed URL like a password.
                 </v-alert>
+                <v-text-field v-model="form.ical_url" label="iCal / ICS URL" type="password" variant="outlined" hint="Direct HTTP(S) .ics subscription URL" persistent-hint class="mb-3"></v-text-field>
+              </template>
 
-                <v-btn
-                  v-if="form.google_client_id && form.google_client_secret"
-                  color="primary"
-                  @click="connectGoogleCalendar"
-                >
-                  Authorize Google Calendar
-                </v-btn>
-                <v-alert
-                  v-else
-                  type="warning"
-                  variant="tonal"
-                  density="compact"
-                >
-                  Enter Google API credentials above first.
-                </v-alert>
-              </div>
+              <template v-else-if="form.calendar_source === 'caldav'">
+                <v-alert type="info" variant="tonal" class="mb-4" density="compact">Read-only CalDAV. Use the CalDAV account URL supplied by your calendar server.</v-alert>
+                <v-text-field v-model="form.caldav_url" label="CalDAV URL" placeholder="https://nas.example:5001/..." variant="outlined" class="mb-2"></v-text-field>
+                <v-text-field v-model="form.caldav_username" label="Username" variant="outlined" class="mb-2"></v-text-field>
+                <v-text-field v-model="form.caldav_password" label="Password / App Password" type="password" variant="outlined" class="mb-2"></v-text-field>
+                <v-switch v-model="form.caldav_skip_cert" label="Allow self-signed / untrusted TLS certificate" color="warning" hide-details class="mb-3"></v-switch>
+                <v-btn color="secondary" variant="tonal" :loading="caldavDiscovering" :disabled="!form.caldav_url" @click="discoverCalDAVCalendars(true)" class="mb-3">Discover calendars</v-btn>
+                <v-alert v-if="caldavCalendars.length > 0" type="success" variant="tonal" density="compact" class="mb-3">{{ caldavCalendars.length }} calendar(s) discovered. Choose one in the device settings.</v-alert>
+              </template>
+
+              <v-row v-if="form.calendar_source === 'ical' || form.calendar_source === 'caldav'" dense>
+                <v-col cols="12" md="6"><v-text-field v-model="form.ical_timezone" label="Calendar timezone" placeholder="Europe/Berlin" variant="outlined"></v-text-field></v-col>
+                <v-col cols="12" md="6"><v-text-field v-model.number="form.calendar_lookahead_days" label="Look ahead (days)" type="number" min="1" max="31" variant="outlined"></v-text-field></v-col>
+              </v-row>
+              <v-text-field v-model.number="form.calendar_max_events" label="Max events" type="number" min="1" max="20" variant="outlined" hint="Small 800x480 info/side-panel layouts support up to 8 visible events." persistent-hint class="mb-3"></v-text-field>
+              <v-btn color="grey-darken-1" @click="save" class="mb-2">Save Calendar Settings</v-btn>
             </v-card-text>
           </v-window-item>
 
@@ -1955,42 +1958,24 @@
                               ></v-text-field>
                             </v-col>
                           </v-row>
-                          <v-tooltip
-                            :disabled="
-                              form.google_calendar_connected === 'true'
-                            "
-                            location="top"
-                            text="Connect Google Calendar in Data Sources first"
-                          >
+                          <v-tooltip :disabled="calendarConfigured" location="top" text="Configure a calendar source in Data Sources first">
                             <template #activator="{ props }">
                               <div v-bind="props" class="d-inline-flex">
-                                <v-checkbox
-                                  v-model="editingDevice.show_calendar"
-                                  label="Show Google Calendar Events"
-                                  color="primary"
-                                  hide-details
-                                  class="mt-2 mb-1"
-                                  :disabled="
-                                    form.google_calendar_connected !== 'true'
-                                  "
-                                ></v-checkbox>
+                                <v-checkbox v-model="editingDevice.show_calendar" label="Show Calendar Events" color="primary" hide-details class="mt-2 mb-1" :disabled="!calendarConfigured"></v-checkbox>
                               </div>
                             </template>
                           </v-tooltip>
                           <v-select
-                            v-if="
-                              editingDevice.show_calendar &&
-                              form.google_calendar_connected === 'true'
-                            "
+                            v-if="editingDevice.show_calendar && form.calendar_source !== 'ical' && calendarConfigured"
                             v-model="editingDevice.calendar_id"
-                            :items="calendars"
+                            :items="activeCalendars"
                             item-title="summary"
                             item-value="id"
                             label="Select Calendar"
                             variant="outlined"
                             density="compact"
                             class="mt-2"
-                            :loading="!calendarLoaded"
+                            :loading="!calendarLoaded || caldavDiscovering"
                           ></v-select>
                         </div>
 
@@ -3071,11 +3056,68 @@ const deleteURLSourceWrapper = async (id: number) => {
 
 // Calendar State
 const calendars = ref<any[]>([]);
+const caldavCalendars = ref<any[]>([]);
 const calendarConnected = ref(false);
 const calendarLoaded = ref(false);
-
+const caldavDiscovering = ref(false);
+const calendarSourceOptions = [
+  { title: 'Google Calendar', value: 'google' },
+  { title: 'iCal / ICS URL', value: 'ical' },
+  { title: 'CalDAV', value: 'caldav' },
+];
+const calendarConfigured = computed(() => {
+  if (form.calendar_source === 'caldav') return !!form.caldav_url;
+  if (form.calendar_source === 'ical') return !!form.ical_url;
+  return form.google_calendar_connected === 'true';
+});
+const activeCalendars = computed(() =>
+  form.calendar_source === 'caldav' ? caldavCalendars.value : calendars.value
+);
+const onCalendarSourceChanged = () => {
+  calendars.value = [];
+  caldavCalendars.value = [];
+  calendarConnected.value = false;
+  calendarLoaded.value = false;
+};
+const discoverCalDAVCalendars = async (showToast = false) => {
+  if (!form.caldav_url) {
+    calendarLoaded.value = true;
+    if (showToast) showMessage('CalDAV URL is required', true);
+    return;
+  }
+  caldavDiscovering.value = true;
+  calendarLoaded.value = false;
+  try {
+    const res = await api.post('/caldav/calendars', {
+      url: form.caldav_url,
+      username: form.caldav_username,
+      password: form.caldav_password,
+      skip_cert: form.caldav_skip_cert,
+    });
+    caldavCalendars.value = res.data || [];
+    calendarConnected.value = caldavCalendars.value.length > 0;
+    if (showToast) showMessage(`Found ${caldavCalendars.value.length} CalDAV calendar(s)`);
+  } catch (e: any) {
+    calendarConnected.value = false;
+    caldavCalendars.value = [];
+    const msg = e.response?.data?.error || e.message || 'unknown error';
+    if (showToast) showMessage('CalDAV discovery failed: ' + msg, true);
+    else console.error('CalDAV discovery failed', e);
+  } finally {
+    caldavDiscovering.value = false;
+    calendarLoaded.value = true;
+  }
+};
 const loadCalendars = async () => {
+  calendarLoaded.value = false;
+  if (form.calendar_source === 'caldav') { await discoverCalDAVCalendars(false); return; }
+  if (form.calendar_source === 'ical') {
+    calendarConnected.value = !!form.ical_url;
+    calendarLoaded.value = true;
+    return;
+  }
   if (form.google_calendar_connected !== 'true') {
+    calendarConnected.value = false;
     calendarLoaded.value = true;
     return;
   }
@@ -3084,11 +3126,8 @@ const loadCalendars = async () => {
     calendars.value = cals;
     calendarConnected.value = true;
   } catch (e: any) {
-    if (e.response?.status === 403) {
-      calendarConnected.value = false;
-    } else {
-      console.error('Failed to load calendars', e);
-    }
+    if (e.response?.status === 403) calendarConnected.value = false;
+    else console.error('Failed to load calendars', e);
   } finally {
     calendarLoaded.value = true;
   }
@@ -4307,6 +4346,15 @@ const form = reactive({
   weather_lon: '',
   google_connected: 'false',
   google_calendar_connected: 'false',
+  calendar_source: 'google',
+  ical_url: '',
+  ical_timezone: 'Europe/Berlin',
+  calendar_lookahead_days: 7,
+  calendar_max_events: 5,
+  caldav_url: '',
+  caldav_username: '',
+  caldav_password: '',
+  caldav_skip_cert: false,
   google_client_id: '',
   google_client_secret: '',
   synology_sid: '',
@@ -4567,6 +4615,17 @@ onMounted(async () => {
     google_connected: store.settings.google_connected || 'false',
     google_calendar_connected:
       store.settings.google_calendar_connected || 'false',
+    calendar_source:
+      store.settings.calendar_source ||
+      (store.settings.caldav_url ? 'caldav' : store.settings.ical_url ? 'ical' : 'google'),
+    ical_url: store.settings.ical_url || '',
+    ical_timezone: store.settings.ical_timezone || 'Europe/Berlin',
+    calendar_lookahead_days: parseInt(store.settings.calendar_lookahead_days || '7'),
+    calendar_max_events: parseInt(store.settings.calendar_max_events || '5'),
+    caldav_url: store.settings.caldav_url || '',
+    caldav_username: store.settings.caldav_username || '',
+    caldav_password: store.settings.caldav_password || '',
+    caldav_skip_cert: store.settings.caldav_skip_cert === 'true',
     telegram_bot_token: store.settings.telegram_bot_token || '',
     telegram_push_enabled: store.settings.telegram_push_enabled === 'true',
     telegram_target_device_id: store.settings.telegram_target_device_id
@@ -4724,6 +4783,15 @@ const saveSettingsInternal = async () => {
     show_weather: String(form.show_weather),
     google_client_id: form.google_client_id,
     google_client_secret: form.google_client_secret,
+    calendar_source: form.calendar_source,
+    ical_url: form.ical_url,
+    ical_timezone: form.ical_timezone,
+    calendar_lookahead_days: String(form.calendar_lookahead_days),
+    calendar_max_events: String(form.calendar_max_events),
+    caldav_url: form.caldav_url,
+    caldav_username: form.caldav_username,
+    caldav_password: form.caldav_password,
+    caldav_skip_cert: String(form.caldav_skip_cert),
     telegram_bot_token: form.telegram_bot_token,
     telegram_push_enabled: String(form.telegram_push_enabled),
     telegram_target_device_id: Array.isArray(form.telegram_target_device_id)
