@@ -12,12 +12,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newFakeSynology returns a test server whose auth.cgi responds per succeed,
-// and a counter of login attempts. Each successful login issues a unique SID.
+// newFakeSynology returns a test server whose SYNO.API.Auth v6 request
+// responds per succeed, plus a counter of login attempts. Each successful
+// login issues a unique SID, mirroring the DSM 7 entry.cgi auth flow.
 func newFakeSynology(succeed bool) (*httptest.Server, *int32) {
 	var authCalls int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "auth.cgi") {
+		_ = r.ParseForm()
+		api := r.Form.Get("api")
+		if api == "" {
+			api = r.URL.Query().Get("api")
+		}
+		if api == "SYNO.API.Auth" {
 			n := atomic.AddInt32(&authCalls, 1)
 			if succeed {
 				fmt.Fprintf(w, `{"success":true,"data":{"sid":"sid-%d","synotoken":"tok-%d"}}`, n, n)
@@ -41,6 +47,8 @@ func newTestSynologyService(t *testing.T, serverURL string) *SynologyService {
 	// Clear state a previous test may have left in the shared in-memory DB.
 	require.NoError(t, settings.Set("synology_sid", ""))
 	require.NoError(t, settings.Set("synology_did", ""))
+	require.NoError(t, settings.Set("synology_token", ""))
+	require.NoError(t, settings.Set("synology_session_account", ""))
 	return NewSynologyService(db, settings)
 }
 
