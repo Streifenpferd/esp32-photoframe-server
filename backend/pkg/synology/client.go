@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -56,6 +57,7 @@ type AuthResponse struct {
 	Success bool `json:"success"`
 	Data    struct {
 		Sid       string `json:"sid"`
+		Did       string `json:"did"`
 		Synotoken string `json:"synotoken"`
 	} `json:"data"`
 	Error struct {
@@ -64,80 +66,75 @@ type AuthResponse struct {
 }
 
 func (c *Client) Login(otpCode string) error {
-	endpoint := fmt.Sprintf("%s/webapi/auth.cgi", c.BaseURL)
-
+	endpoint := fmt.Sprintf("%s/webapi/entry.cgi", c.BaseURL)
 	params := url.Values{}
 	params.Set("api", "SYNO.API.Auth")
-	params.Set("version", "3")
+	params.Set("version", "6")
 	params.Set("method", "login")
 	params.Set("account", c.Account)
 	params.Set("passwd", c.Password)
-	params.Set("session", "PhotoFrame")
 	params.Set("format", "cookie")
-	params.Set("enable_device_token", "yes")
-	params.Set("device_name", "PhotoFrame")
 	params.Set("enable_syno_token", "yes")
-	params.Set("logintype", "local")
-	params.Set("rememberme", "1")
 
 	if otpCode != "" {
 		params.Set("otp_code", otpCode)
+		params.Set("enable_device_token", "yes")
+		params.Set("device_name", "PhotoFrame")
+	} else if c.DID != "" {
+		params.Set("device_name", "PhotoFrame")
+		params.Set("device_id", c.DID)
 	}
 
-	resp, err := c.httpClient.Get(endpoint + "?" + params.Encode())
-	if err != nil {
-		return err
-	}
+	log.Printf("Synology auth attempt: endpoint=%s api_version=6 session=none otp=%t device_id=%t",
+		endpoint, otpCode != "", c.DID != "")
+
+	resp, err := c.httpClient.PostForm(endpoint, params)
+	if err != nil { return err }
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("auth returned status: %d", resp.StatusCode)
 	}
-
-	// Capture id and did cookies
 	for _, cookie := range resp.Cookies() {
-		if cookie.Name == "id" {
-			c.SID = cookie.Value
-		} else if cookie.Name == "did" {
-			c.DID = cookie.Value
-		}
+		if cookie.Name == "id" { c.SID = cookie.Value } else if cookie.Name == "did" { c.DID = cookie.Value }
 	}
-
-	// Capture SynoToken from header
-	if token := resp.Header.Get("X-SYNO-TOKEN"); token != "" {
-		c.SynoToken = token
-	}
+	if token := resp.Header.Get("X-SYNO-TOKEN"); token != "" { c.SynoToken = token }
 
 	var result AuthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return err
-	}
-
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil { return err }
 	if !result.Success {
+		log.Printf("Synology auth failed: code=%d api_version=6 session=none otp=%t device_id=%t",
+			result.Error.Code, otpCode != "", c.DID != "")
 		return fmt.Errorf("login failed with code: %d", result.Error.Code)
 	}
+	if result.Data.Sid != "" { c.SID = result.Data.Sid }
+	if result.Data.Did != "" { c.DID = result.Data.Did }
+	if result.Data.Synotoken != "" { c.SynoToken = result.Data.Synotoken }
 
-	if result.Data.Sid != "" {
-		c.SID = result.Data.Sid
-	}
-	if result.Data.Synotoken != "" {
-		c.SynoToken = result.Data.Synotoken
+	if parsed, parseErr := url.Parse(c.BaseURL); parseErr == nil && c.httpClient.Jar != nil {
+		cookies := make([]*http.Cookie, 0, 2)
+		if c.SID != "" { cookies = append(cookies, &http.Cookie{Name:"id", Value:c.SID, Path:"/"}) }
+		if c.DID != "" { cookies = append(cookies, &http.Cookie{Name:"did", Value:c.DID, Path:"/"}) }
+		if len(cookies) > 0 { c.httpClient.Jar.SetCookies(parsed, cookies) }
 	}
 
+	log.Printf("Synology auth successful: api_version=6 session=none sid=%t synotoken=%t device_id=%t",
+		c.SID != "", c.SynoToken != "", c.DID != "")
 	return nil
 }
 
 func (c *Client) Logout() error {
-	if c.SID == "" {
-		return nil
-	}
-	endpoint := fmt.Sprintf("%s/webapi/auth.cgi", c.BaseURL)
+	if c.SID == "" { return nil }
+	endpoint := fmt.Sprintf("%s/webapi/entry.cgi", c.BaseURL)
 	params := url.Values{}
 	params.Set("api", "SYNO.API.Auth")
-	params.Set("version", "3")
-	c.httpClient.Get(endpoint + "?" + params.Encode())
+	params.Set("version", "6")
+	params.Set("method", "logout")
+	params.Set("_sid", c.SID)
+	resp, err := c.httpClient.PostForm(endpoint, params)
+	if err == nil && resp != nil { resp.Body.Close() }
 	c.SID = ""
-	return nil
+	c.SynoToken = ""
+	return err
 }
 
 func (c *Client) ListAlbums(offset, limit int) ([]Album, error) {
