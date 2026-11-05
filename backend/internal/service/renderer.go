@@ -384,46 +384,35 @@ func calcMaxEvents(layout string, w, h int) int {
 
 	switch layout {
 	case model.LayoutPhotoInfo:
-		if isSmall {
-			return 2
-		}
-		return 8
+		if isSmall { return 8 }
+		return 12
 	case model.LayoutPhotoOverlay:
-		if isSmall {
-			return 1
-		}
-		return 3
+		if isSmall { return 3 }
+		return 5
 	case model.LayoutSidePanel:
-		if isSmall {
-			return 2
-		}
-		return 6
+		if isSmall { return 8 }
+		return 12
 	default:
-		return 1
+		return 5
 	}
 }
 
 func calcPhotoRatio(layout string, w, h int) float64 {
 	isPortrait := h > w
 	isSmall := (w * h) < 500000
-
 	switch layout {
 	case model.LayoutPhotoInfo:
 		if isPortrait {
-			if isSmall {
-				return 0.65
-			}
+			if isSmall { return 0.65 }
 			return 0.60
 		}
 		return 0.75
 	case model.LayoutSidePanel:
-		if isPortrait {
-			// Falls back to top/bottom layout in portrait
-			return 0.60
-		}
+		if isPortrait { return 0.60 }
+		if isSmall { return 0.65 }
 		return 0.80
 	default:
-		return 1.0 // photo_overlay: full screen
+		return 1.0
 	}
 }
 
@@ -644,6 +633,19 @@ const layoutTemplate = `<!DOCTYPE html>
     white-space: nowrap;
   }
 
+  /* Compact calendar rows for 800x480 displays. */
+  {{if .IsSmall}}
+  .event-item {
+    padding: calc(var(--gap) * 0.16) 0;
+    line-height: 1.05;
+  }
+  .event-time {
+    min-width: 3.5em;
+  }
+  .layout-photo_info.landscape .info-panel {
+    max-width: 38%;
+  }
+  {{end}}
   /* Scale down info panel text */
   {{if .IsSmall}}
   .info-panel {

@@ -103,6 +103,7 @@ func (s *SynologyService) ensureClient(otpCode string, force bool) error {
 	savedSID, _ := s.settings.Get("synology_sid")
 	savedDID, _ := s.settings.Get("synology_did")
 	savedToken, _ := s.settings.Get("synology_token")
+	savedSessionAccount, _ := s.settings.Get("synology_session_account")
 	skipCertStr, _ := s.settings.Get("synology_skip_cert")
 	insecure := skipCertStr == "true"
 
@@ -110,37 +111,32 @@ func (s *SynologyService) ensureClient(otpCode string, force bool) error {
 		return errors.New("synology credentials not configured")
 	}
 
-	var parsedURL *url.URL
+	knownSameAccount := savedSessionAccount != "" && savedSessionAccount == account
+	legacyUnboundSession := savedSessionAccount == ""
 
-	// If client exists and has same config, check connectivity or session
-	if s.client == nil || s.client.BaseURL != baseURL || s.client.Account != account {
+	if s.client == nil || s.client.BaseURL != baseURL || s.client.Account != account || s.client.Password != password {
 		c, err := synology.NewClient(baseURL, account, password, insecure)
-		if err != nil {
-			return err
-		}
+		if err != nil { return err }
 		s.client = c
-		// Restore SID, DID and SynoToken if available
-		if savedSID != "" {
-			s.client.SID = savedSID
-			s.client.DID = savedDID
-			s.client.SynoToken = savedToken
 
-			// Set cookies in the jar
-			parsedURL, err = url.Parse(baseURL)
-			if err == nil && s.client.Jar() != nil {
-				cookies := []*http.Cookie{
-					{Name: "id", Value: savedSID, Path: "/"},
-				}
-				if savedDID != "" {
-					cookies = append(cookies, &http.Cookie{Name: "did", Value: savedDID, Path: "/"})
-				}
+		var cookies []*http.Cookie
+		if !force && (knownSameAccount || legacyUnboundSession) && savedSID != "" {
+			s.client.SID = savedSID
+			s.client.SynoToken = savedToken
+			cookies = append(cookies, &http.Cookie{Name:"id", Value:savedSID, Path:"/"})
+		}
+		if savedDID != "" && (knownSameAccount || (!force && legacyUnboundSession)) {
+			s.client.DID = savedDID
+			cookies = append(cookies, &http.Cookie{Name:"did", Value:savedDID, Path:"/"})
+		}
+		if len(cookies) > 0 {
+			if parsedURL, err := url.Parse(baseURL); err == nil && s.client.Jar() != nil {
 				s.client.Jar().SetCookies(parsedURL, cookies)
 			}
 		}
 	}
 
-	// Login if no SID or if explicitly requested (otpCode provided implies re-login attempt?)
-	if s.client.SID == "" || otpCode != "" {
+	if force || s.client.SID == "" || otpCode != "" {
 		if !force && time.Since(s.lastLoginFail) < loginRetryCooldown {
 			return errors.New("synology login recently failed; waiting before retrying")
 		}
@@ -150,26 +146,21 @@ func (s *SynologyService) ensureClient(otpCode string, force bool) error {
 		}
 		s.lastLoginFail = time.Time{}
 		s.loginGen++
-		// Save SID and DID
-		s.settings.Set("synology_sid", s.client.SID)
-		s.settings.Set("synology_did", s.client.DID)
+		_ = s.settings.Set("synology_sid", s.client.SID)
+		_ = s.settings.Set("synology_did", s.client.DID)
+		_ = s.settings.Set("synology_session_account", account)
 	}
-
-	// Capture SynoToken from cookie jar or direct client field
 	_ = s.settings.Set("synology_token", s.client.SynoToken)
-
 	return nil
 }
 
 func (s *SynologyService) Logout() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if s.client != nil {
-		_ = s.client.Logout()
-	}
-	s.settings.Set("synology_token", "")
-	s.settings.Set("synology_did", "")
+	if s.client != nil { _ = s.client.Logout() }
+	_ = s.settings.Set("synology_token", "")
+	_ = s.settings.Set("synology_did", "")
+	_ = s.settings.Set("synology_session_account", "")
 	return s.settings.Set("synology_sid", "")
 }
 
@@ -412,51 +403,75 @@ func (s *SynologyService) ListRemoteAlbums() ([]RemoteAlbum, error) {
 // photo to a source-agnostic RemoteAsset.
 func (s *SynologyService) FetchAlbumAssets(album model.Album) ([]RemoteAsset, error) {
 	albumID, err := strconv.Atoi(album.ExternalID)
-	if err != nil {
-		return nil, err
-	}
-	ref := synology.AlbumRef{ID: albumID, Passphrase: album.SharePassphrase}
+	if err != nil { return nil, err }
 
-	// Page through the album over the network.
+	ref := synology.AlbumRef{ID: albumID, Passphrase: album.SharePassphrase}
+	sharedWithMe := album.SharePassphrase != ""
+	metadataRefreshed := false
+
+	if remoteAlbums, listErr := s.ListAlbums(); listErr != nil {
+		log.Printf("synology: could not refresh album metadata before sync name=%q album_id=%d: %v", album.Name, albumID, listErr)
+	} else {
+		for _, remote := range remoteAlbums {
+			if remote.ID != albumID { continue }
+			metadataRefreshed = true
+			sharedWithMe = remote.SharedWithMe
+			if remote.SharedWithMe {
+				if remote.Passphrase != "" {
+					ref.Passphrase = remote.Passphrase
+					if album.SharePassphrase != remote.Passphrase {
+						if dbErr := s.db.Model(&model.Album{}).Where("id = ?", album.ID).Update("share_passphrase", remote.Passphrase).Error; dbErr != nil {
+							log.Printf("synology: failed to persist refreshed shared-album reference name=%q album_id=%d: %v", album.Name, albumID, dbErr)
+						} else {
+							album.SharePassphrase = remote.Passphrase
+							log.Printf("synology: repaired shared-album reference name=%q album_id=%d passphrase_present=true", album.Name, albumID)
+						}
+					}
+				}
+			} else {
+				ref.Passphrase = ""
+				if album.SharePassphrase != "" {
+					if dbErr := s.db.Model(&model.Album{}).Where("id = ?", album.ID).Update("share_passphrase", "").Error; dbErr != nil {
+						log.Printf("synology: failed to clear stale album share reference name=%q album_id=%d: %v", album.Name, albumID, dbErr)
+					}
+				}
+			}
+			break
+		}
+	}
+
+	log.Printf("synology: syncing album name=%q album_id=%d shared_with_me=%t passphrase_present=%t metadata_refreshed=%t",
+		album.Name, albumID, sharedWithMe, ref.Passphrase != "", metadataRefreshed)
+
 	photos, err := pageSynology("album "+album.ExternalID+" photos",
 		synologyPhotoPageSize, synologyMaxAlbumPhotos/synologyPhotoPageSize,
 		func(offset, limit int) ([]synology.Item, error) {
 			gen := s.loginGeneration()
 			batch, e := s.client.ListPhotos(offset, limit, ref)
 			if s.isAuthExpired(e) {
-				if reErr := s.relogin(gen); reErr != nil {
-					return nil, reErr
-				}
+				if reErr := s.relogin(gen); reErr != nil { return nil, reErr }
 				batch, e = s.client.ListPhotos(offset, limit, ref)
 			}
 			return batch, e
 		})
 	if err != nil {
+		if strings.Contains(err.Error(), "code: 120") {
+			log.Printf("synology: DSM code 120 while syncing name=%q album_id=%d shared_with_me=%t passphrase_present=%t metadata_refreshed=%t",
+				album.Name, albumID, sharedWithMe, ref.Passphrase != "", metadataRefreshed)
+		}
 		return nil, err
 	}
 
-	// Synology omits resolution for some items (reported as 0x0), which
-	// determineOrientation would misclassify as landscape. Recover the real
-	// orientation by decoding a thumbnail. Runs outside any DB transaction.
 	s.backfillMissingResolutions(photos, ref)
-
 	out := make([]RemoteAsset, 0, len(photos))
 	for _, p := range photos {
 		pw, ph := p.Additional.Resolution.Width, p.Additional.Resolution.Height
 		thumbKey := thumbnailKey(p)
 		var photoTaken *time.Time
-		if p.Time > 0 {
-			t := time.Unix(p.Time, 0)
-			photoTaken = &t
-		}
+		if p.Time > 0 { t := time.Unix(p.Time, 0); photoTaken = &t }
 		out = append(out, RemoteAsset{
-			ExternalID:   strconv.Itoa(p.ID),
-			FilePath:     p.Filename,
-			Width:        pw,
-			Height:       ph,
-			Orientation:  determineOrientation(pw, ph, ""),
-			ThumbnailKey: thumbKey,
-			PhotoTakenAt: photoTaken,
+			ExternalID: strconv.Itoa(p.ID), FilePath: p.Filename, Width: pw, Height: ph,
+			Orientation: determineOrientation(pw, ph, ""), ThumbnailKey: thumbKey, PhotoTakenAt: photoTaken,
 		})
 	}
 	return out, nil

@@ -43,6 +43,7 @@ type ImageHandlerDeps struct {
 	Sources        *imagesource.Registry
 	Weather        *weather.Client
 	Calendar       *gcalendar.Client
+	CalendarEvents *service.CalendarEventService
 	Auth           *service.AuthService
 	DB             *gorm.DB
 	DataDir        string
@@ -56,6 +57,7 @@ type ImageHandler struct {
 	sources        *imagesource.Registry
 	weather        *weather.Client
 	calendar       *gcalendar.Client
+	calendarEvents *service.CalendarEventService
 	auth           *service.AuthService
 	db             *gorm.DB
 	dataDir        string
@@ -70,6 +72,7 @@ func NewImageHandler(deps ImageHandlerDeps) *ImageHandler {
 		sources:        deps.Sources,
 		weather:        deps.Weather,
 		calendar:       deps.Calendar,
+		calendarEvents: deps.CalendarEvents,
 		auth:           deps.Auth,
 		db:             deps.DB,
 		dataDir:        deps.DataDir,
@@ -401,18 +404,11 @@ func (h *ImageHandler) ServeImage(c echo.Context) error {
 		}
 
 		var events []gcalendar.Event
-		if showCalendar && h.calendar != nil && h.calendarGoogle != nil {
-			httpClient, err := h.calendarGoogle.GetClient()
-			if err == nil {
-				calendarID := device.CalendarID
-				if calendarID == "" {
-					calendarID = "primary"
-				}
-				var calErr error
-				events, calErr = h.calendar.GetTodayEvents(httpClient, calendarID, deviceTimezone)
-				if calErr != nil {
-					log.Printf("Failed to fetch calendar events: %v", calErr)
-				}
+		if showCalendar && h.calendarEvents != nil {
+			var calErr error
+			events, calErr = h.calendarEvents.GetEvents(device.CalendarID, deviceTimezone)
+			if calErr != nil {
+				log.Printf("Failed to fetch calendar events: %v", calErr)
 			}
 		}
 

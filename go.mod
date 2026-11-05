@@ -3,7 +3,9 @@ module github.com/aitjcize/esp32-photoframe-server
 go 1.24.5
 
 require (
+	github.com/arran4/golang-ical v0.3.6
 	github.com/go-rod/rod v0.116.2
+	github.com/teambition/rrule-go v1.8.2
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/labstack/echo/v4 v4.15.0
